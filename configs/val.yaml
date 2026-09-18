@@ -1,0 +1,15 @@
+# valing control
+val_batch_size: 4
+validation_steps: 100
+val_first: False
+save_val: False
+save_steps: 10000
+crop_val: True
+
+# valing details
+enable_xformers_memory_efficient_attention: False
+set_grads_to_none: True
+world_size: 1
+local_rank: -1
+dist_url: env://
+color_fix: False

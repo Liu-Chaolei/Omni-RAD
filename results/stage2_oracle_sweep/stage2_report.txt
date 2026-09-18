@@ -1,0 +1,106 @@
+======================================================================
+STAGE 2: T-AUGMENTATION MODEL ORACLE-T SWEEP REPORT
+======================================================================
+
+----------------------------------------------------------------------
+A. STRATEGY COMPARISON TABLE
+----------------------------------------------------------------------
+                             PSNR  MS-SSIM  LPIPS  DISTS
+Strategy                                                
+Fixed-999                 21.3749   0.7357 0.2173 0.1183
+Fixed-best-global (T=980) 21.5711   0.7398 0.2230 0.1285
+SNR-T (per-image)         19.2594   0.6849 0.3758 0.2890
+Oracle-T (per-image)      21.5129   0.7399 0.2154 0.1177
+
+----------------------------------------------------------------------
+B. T_ORACLE_AUG DISTRIBUTION
+----------------------------------------------------------------------
+  Total samples: 144
+  Mean T_oracle: 994.0
+  Std T_oracle:  8.5
+  Median T_oracle: 999
+  Concentration at 999: 67.4%
+
+  Value counts:
+    T= 950:    1 (  0.7%) 
+    T= 970:    4 (  2.8%) #
+    T= 980:   17 ( 11.8%) #####
+    T= 990:   25 ( 17.4%) ########
+    T= 999:   97 ( 67.4%) #################################
+
+----------------------------------------------------------------------
+C. GAIN ANALYSIS (Oracle-T vs Fixed-999)
+----------------------------------------------------------------------
+  N samples: 144
+  PSNR gain mean: 0.1380 dB
+  PSNR gain std:  0.2509 dB
+  PSNR gain max:  1.2075 dB
+  Pct positive PSNR gain: 31.9%
+  LPIPS gain mean: 0.0019
+  Pct positive LPIPS gain: 32.6%
+
+----------------------------------------------------------------------
+D. CROSS-STAGE COMPARISON (Stage 0 vs Stage 2)
+----------------------------------------------------------------------
+  Stage 0 mean T_oracle: 993.4
+  Stage 2 mean T_oracle: 994.0
+  Stage 0 pct at 999: 59.0%
+  Stage 2 pct at 999: 67.4%
+  JS divergence: 0.0105
+  Paired samples: 144
+  Paired mean diff (aug - posthoc): 0.6
+  Paired pct changed: 13.9%
+  Paired correlation: 0.9158
+
+----------------------------------------------------------------------
+E. MULTI-FACTOR FEATURE IMPORTANCE
+----------------------------------------------------------------------
+  Error: Too few valid samples (0)
+
+----------------------------------------------------------------------
+F. KEY CORRELATIONS (feature vs T_oracle_aug)
+----------------------------------------------------------------------
+  pearson(__T_snr, T_oracle): -0.4643
+  spearman(__T_snr, T_oracle): -0.4130
+  pearson(__actual_bpp, T_oracle): 0.4908
+  spearman(__actual_bpp, T_oracle): 0.4405
+  pearson(__lambda, T_oracle): -0.3297
+  spearman(__lambda, T_oracle): -0.4136
+  pearson(scales_mean, T_oracle): 0.4589
+  spearman(scales_mean, T_oracle): 0.4182
+  pearson(scales_std, T_oracle): 0.4673
+  spearman(scales_std, T_oracle): 0.4366
+  pearson(log_lambda, T_oracle): -0.4644
+  spearman(log_lambda, T_oracle): -0.4136
+  pearson(latent_energy, T_oracle): -0.7645
+  spearman(latent_energy, T_oracle): -0.5284
+  pearson(res1_norm, T_oracle): -0.1453
+  spearman(res1_norm, T_oracle): -0.0865
+  pearson(SNR_compress, T_oracle): 0.4477
+  spearman(SNR_compress, T_oracle): 0.4182
+
+======================================================================
+STAGE 2 DIAGNOSTIC CONCLUSION
+======================================================================
+
+[CROSS-STAGE] T_oracle concentration at 999:
+  Stage 0 (fixed-999 model): 59.0%
+  Stage 2 (T-aug model):     67.4%
+  JS divergence: 0.0105
+  Paired samples changed: 13.9%
+
+  -> Both stages show dispersed oracle distributions.
+
+[FEATURE IMPORTANCE]
+
+
+[GAIN ASSESSMENT]
+  Mean PSNR gain (Oracle-T vs Fixed-999): 0.1380 dB
+  Pct positive: 31.9%
+  -> Moderate gain; PolicyNet training worthwhile.
+
+[RECOMMENDATION]
+  -> Proceed to Stage 3 (E2E PolicyNet) as primary route.
+  -> Feature predictability is limited; E2E may outperform supervised.
+
+======================================================================

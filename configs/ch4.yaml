@@ -1,0 +1,25 @@
+# testing details
+enable_xformers_memory_efficient_attention: False
+color_fix: False
+
+# StableCodec Model
+model:
+  mode: test
+  sd_path: /data/ssd/liuchaolei/models/Diffusion/sd-turbo
+  elic_path: /data/ssd/liuchaolei/models/Image-Coder/StableCodec/checkpoints/elic_official.pth
+  # Pretrain / resume
+  resume_train: False
+  codec_path: /data/ssd/liuchaolei/models/Image-Coder/StableCodec/checkpoints/stablecodec_ft2.pkl
+
+  # Details about the model architecture
+  lora_rank_unet: 32
+  lora_rank_vae: 16
+  vae_decoder_tiled_size: 160
+  vae_encoder_tiled_size: 1024
+  latent_tiled_size: 96
+  latent_tiled_overlap: 32
+  pos_prompt: A high-resolution, 8K, ultra-realistic image with sharp focus, vibrant colors, and natural lighting.
+
+  freeze_aux_encoder: True
+  latent_channels: 4
+  timesteps: 999
