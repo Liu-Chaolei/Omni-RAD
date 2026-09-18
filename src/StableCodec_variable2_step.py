@@ -13,7 +13,7 @@ Changes from StableCodec_variable2.py:
               (DDPMScheduler.step() does not support batched t).
 
 Injection Point 3 — ϵSD UNet LoRA adaptive scaling (unchanged):
-    lora_scale = 1 + tanh(unet_lora_proj(film_embed.mean(0)))  ∈ (0, 2)
+    lora_scale = 1 + tanh(unet_lora_proj(film_embed))  ∈ (0, 2)
     model_pred_scaled = model_pred * lora_scale
 
     Rationale: at high λ (extreme compression) the quantised lT is degraded;
@@ -32,7 +32,8 @@ from model import make_1step_sched_cuda, my_lora_fwd
 from my_utils.vaehook import VAEHook
 from latent_codec_variable2_step import LatentCodec, LAMBDA_MIN, LAMBDA_MAX
 import sys
-sys.path.append("..")
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ELIC.model.elic_official import ELIC
 
 
@@ -380,8 +381,7 @@ class StableCodec(torch.nn.Module):
             lq_latent, latent2, ori_h, ori_w, lmbda)
 
         # ---- Injection Point 3: UNet LoRA adaptive scaling ----
-        # Compute shared embedding f(λ) once and derive a per-batch scalar scale.
-        # film_embed: [B, FILM_DIM];  take mean over batch → [1, FILM_DIM]
+        # Compute shared embedding f(λ) and derive a scale for each image.
         film_embed  = self.codec.film_embed(lmbda)          # [B, FILM_DIM]
         delta_s     = self.unet_lora_proj(film_embed)                 # [B, 1]
         lora_scale  = (1.0 + torch.tanh(delta_s)).view(B, 1, 1, 1)   # [B, 1, 1, 1]
@@ -426,9 +426,11 @@ class StableCodec(torch.nn.Module):
             lmbda = torch.full((B,), self.codec.lambda_min,
                                dtype=torch.float32, device=device)
         else:
-            lmbda = torch.tensor(lmbda, dtype=torch.float32, device=device)
+            lmbda = torch.as_tensor(lmbda, dtype=torch.float32, device=device)
             if lmbda.dim() == 0:
                 lmbda = lmbda.expand(B)
+        if not torch.isfinite(lmbda).all() or (lmbda <= 0).any():
+            raise ValueError("lambda must be finite and positive")
 
         latent2   = self.aux_codec((x + 1) / 2).detach()
         lq_latent = self.vae.encode(x).latent_dist.mode() * self.vae.config.scaling_factor
@@ -462,7 +464,7 @@ class StableCodec(torch.nn.Module):
 
         # ---- Injection Point 3 at inference ----
         if lmbda is not None:
-            lmbda_t    = lmbda.to(device).float()
+            lmbda_t    = torch.as_tensor(lmbda, device=device, dtype=torch.float32)
             if lmbda_t.dim() == 0:
                 lmbda_t = lmbda_t.expand(B)
             film_embed = self.codec.film_embed(lmbda_t)
@@ -512,8 +514,8 @@ class StableCodec(torch.nn.Module):
                         input_list = []
                     noise_preds.append(pred)
 
-            noise_pred   = torch.zeros_like(lq_latent_hat[:, :4])
-            contributors = torch.zeros_like(lq_latent_hat[:, :4])
+            noise_pred   = torch.zeros_like(lq_latent_hat[:, :256])
+            contributors = torch.zeros_like(lq_latent_hat[:, :256])
             for row in range(grid_rows):
                 for col in range(grid_cols):
                     ox = (w - tile_size) if row == grid_rows - 1 else max(row * tile_size - tile_overlap * row, 0)
@@ -524,7 +526,7 @@ class StableCodec(torch.nn.Module):
 
         x_denoised = (
             self._batched_ddpm_step(model_pred, t_star_long,
-                                    lq_latent_hat[:, :4])
+                                    lq_latent_hat[:, :256])
             + res
         )
         output_image = (
@@ -578,4 +580,4 @@ class StableCodec(torch.nn.Module):
         x_p = [exp(-(x-mx)**2 / (tile_width **2) / (2*var)) / sqrt(2*pi*var) for x in range(tile_width)]
         y_p = [exp(-(y-my)**2 / (tile_height**2) / (2*var)) / sqrt(2*pi*var) for y in range(tile_height)]
         weights = np.outer(y_p, x_p)
-        return torch.tile(torch.tensor(weights), (nbatches, self.unet.config.in_channels, 1, 1))
+        return torch.tile(torch.tensor(weights), (nbatches, 1, 1, 1))

@@ -7,7 +7,8 @@ from model import make_1step_sched_cuda, my_lora_fwd
 from my_utils.vaehook import VAEHook
 from latent_codec_ori import LatentCodec
 import sys
-sys.path.append("..")
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ELIC.model.elic_official import ELIC
 
 
@@ -157,14 +158,14 @@ class StableCodec(torch.nn.Module):
 
     # def unfreeze_mismatched_layers(self, model, loading_info, model_name="model"):
     #     mismatched_keys = loading_info.get("mismatched_keys", [])
-        
+
     #     unfrozen_count = 0
     #     for name, param in model.named_parameters():
     #         if name in mismatched_keys:
     #             param.requires_grad = True
     #             unfrozen_count += 1
     #             print(f"  -> Unfrozen {model_name}: {name}")
-        
+
     #     if unfrozen_count == 0:
     #         print(f"  -> No mismatched layers found for {model_name} (or keys didn't match).")
 
@@ -268,7 +269,7 @@ class StableCodec(torch.nn.Module):
         return output_image, RateLossOutput
 
     def compress(self, x):
-        
+
         # Encoder
         latent2 = self.aux_codec((x + 1) / 2).detach()
         lq_latent = self.vae.encode(x).latent_dist.mode() * self.vae.config.scaling_factor
@@ -277,7 +278,7 @@ class StableCodec(torch.nn.Module):
         output_dict = self.codec.compress(lq_latent, latent2)
 
         return output_dict
-    
+
     def decompress(self, strings, shape, pos_prompt):
 
         # Latent Codec - Entropy Decoding
@@ -334,8 +335,8 @@ class StableCodec(torch.nn.Module):
                         input_list = []
                     noise_preds.append(model_pred)
 
-            noise_pred = torch.zeros(lq_latent_hat[:, :4].shape, device=lq_latent_hat.device)
-            contributors = torch.zeros(lq_latent_hat[:, :4].shape, device=lq_latent_hat.device)
+            noise_pred = torch.zeros(lq_latent_hat[:, :self.latent_channels].shape, device=lq_latent_hat.device)
+            contributors = torch.zeros(lq_latent_hat[:, :self.latent_channels].shape, device=lq_latent_hat.device)
             for row in range(grid_rows):
                 for col in range(grid_cols):
                     if col < grid_cols-1 or row < grid_rows-1:
@@ -362,18 +363,18 @@ class StableCodec(torch.nn.Module):
         output_image = (self.vae.decode(x_denoised / self.vae.config.scaling_factor).sample).clamp(-1, 1)
 
         return output_image
-    
+
     def save_model(self, outf):
         sd = {}
         sd["state_dict_vae"] = {k: v for k, v in self.vae.state_dict().items() if "lora" in k}
         sd["state_dict_unet"] = {k: v for k, v in self.unet.state_dict().items() if "lora" in k or "conv_in" in k}
         sd["state_dict_codec"] = {k: v for k, v in self.codec.state_dict().items()}
         torch.save(sd, outf)
-    
+
     def _set_latent_tile(self, latent_tiled_size = 96, latent_tiled_overlap = 32):
         self.latent_tiled_size = latent_tiled_size
         self.latent_tiled_overlap = latent_tiled_overlap
-    
+
     def _init_tiled_vae(self,
             encoder_tile_size = 256,
             decoder_tile_size = 256,

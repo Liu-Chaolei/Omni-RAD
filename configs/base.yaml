@@ -1,11 +1,13 @@
-# Global settings
+# Example configuration; set paths and training bounds for your checkpoint.
 num_workers: 4
-cuda: True
+cuda: true
 global_seed: 42
-base_patch_size: [256, 256]
-model_stride: [64, 64]
-
-# Data settings
-train_dataset: /data/ssd/liuchaolei/image_datasets/DFCLIC
-hdf5_dataset: /data/ssd/liuchaolei/image_datasets/scdata.hdf5
-test_dataset: /data/ssd/liuchaolei/image_datasets/Kodak24/HR
+base_patch_size:
+- 256
+- 256
+model_stride:
+- 64
+- 64
+train_dataset: data/train
+hdf5_dataset: data/train.h5
+test_dataset: data/kodak

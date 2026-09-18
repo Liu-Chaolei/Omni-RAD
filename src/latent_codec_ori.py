@@ -8,21 +8,22 @@ from compressai.entropy_models import EntropyBottleneck, GaussianConditional
 from compressai.ops import quantize_ste as ste_round
 from compressai.ans import BufferedRansEncoder, RansDecoder
 import sys
-sys.path.append("..")
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ELIC.model.elic_official import CompressionModel, get_scale_table
 
 class InceptionDWConv2d(nn.Module):
     def __init__(self, split_indexes, square_kernel_size=3, band_kernel_size=11):
         super().__init__()
-        
+
         self.dwconv_hw = nn.Conv2d(split_indexes[1], split_indexes[1], square_kernel_size, padding=square_kernel_size//2, groups=split_indexes[1])
         self.dwconv_w = nn.Conv2d(split_indexes[2], split_indexes[2], kernel_size=(1, band_kernel_size), padding=(0, band_kernel_size//2), groups=split_indexes[2])
         self.dwconv_h = nn.Conv2d(split_indexes[3], split_indexes[3], kernel_size=(band_kernel_size, 1), padding=(band_kernel_size//2, 0), groups=split_indexes[3])
         self.split_indexes = split_indexes
-        
+
     def forward(self, x):
         id, x_hw, x_w, x_h = torch.split(x, self.split_indexes, dim=1)
-        return torch.cat((id, self.dwconv_hw(x_hw), self.dwconv_w(x_w), self.dwconv_h(x_h)), dim=1)    
+        return torch.cat((id, self.dwconv_hw(x_hw), self.dwconv_w(x_w), self.dwconv_h(x_h)), dim=1)
 
 class InceptionNeXt(nn.Module):
     def __init__(self, in_ch):
@@ -39,7 +40,7 @@ class InceptionNeXt(nn.Module):
         x = self.act(x)
         x = self.conv2(x)
         return x + shortcut
-        
+
 class GatedCNNBlock(nn.Module):
     def __init__(self, in_ch, expansion_ratio=2):
         super().__init__()
@@ -56,7 +57,7 @@ class GatedCNNBlock(nn.Module):
         x1, x2 = self.fc1(x).chunk(2, 1)
         x = self.fc2(self.act(x1) * self.conv(x2))
         return x + shortcut
-    
+
 class BasicBlock(nn.Module):
     def __init__(self, in_ch):
         super().__init__()
@@ -85,26 +86,26 @@ class Downsample(nn.Module):
 
     def forward(self, x):
         return self.branch1(x) + self.branch2(x)
-    
+
 class Upsample(nn.Module):
     def __init__(self, in_ch, out_ch):
         super().__init__()
         self.branch1 = nn.Sequential(
             nn.Conv2d(in_ch, in_ch, kernel_size=3, padding=1),
             nn.GELU(),
-            nn.Conv2d(in_ch, out_ch * 4, kernel_size=1, padding=0), 
+            nn.Conv2d(in_ch, out_ch * 4, kernel_size=1, padding=0),
             nn.PixelShuffle(2),
         )
         self.branch2 = nn.Sequential(
             nn.Conv2d(in_ch, in_ch, kernel_size=5, padding=2, groups=in_ch),
             nn.GELU(),
-            nn.Conv2d(in_ch, out_ch * 4, kernel_size=1, padding=0), 
+            nn.Conv2d(in_ch, out_ch * 4, kernel_size=1, padding=0),
             nn.PixelShuffle(2),
         )
 
     def forward(self, x):
         return self.branch1(x) + self.branch2(x)
-    
+
 class AnalysisTransform_4(nn.Module):
     def __init__(self):
         super().__init__()
@@ -122,7 +123,7 @@ class AnalysisTransform_4(nn.Module):
         x = torch.cat((self.pre1(latent), self.pre2(latent2)), dim=1)
         x = self.analysis_transform(x)
         return x
-    
+
 class SynthesisTransform(nn.Module):
     def __init__(self) -> None:
         super().__init__()
@@ -138,7 +139,7 @@ class SynthesisTransform(nn.Module):
     def forward(self, x):
         x = self.synthesis_transform(x)
         return x
-    
+
 class AuxDecoder_4(nn.Module):
     def __init__(self) -> None:
         super().__init__()
@@ -154,7 +155,7 @@ class AuxDecoder_4(nn.Module):
     def forward(self, x):
         x = self.block(x)
         return x
-    
+
 class Adapter(nn.Module):
     def __init__(self, in_ch, out_ch) -> None:
         super().__init__()
@@ -169,7 +170,7 @@ class Adapter(nn.Module):
 
     def forward(self, x):
         return self.branch1(x) + self.branch2(x)
-    
+
 class HyperAnalysis(nn.Module):
     def __init__(self, M=320) -> None:
         super().__init__()
@@ -182,22 +183,22 @@ class HyperAnalysis(nn.Module):
     def forward(self, x):
         x = self.reduction(x)
         return x
-    
+
 class HyperSynthesis(nn.Module):
     def __init__(self, M=320) -> None:
         super().__init__()
         self.increase = nn.Sequential(
-            nn.Conv2d(M // 2, M * 2, kernel_size=1, padding=0), 
+            nn.Conv2d(M // 2, M * 2, kernel_size=1, padding=0),
             nn.PixelShuffle(2),
             BasicBlock(M // 2),
-            nn.Conv2d(M // 2, M * 4, kernel_size=1, padding=0), 
+            nn.Conv2d(M // 2, M * 4, kernel_size=1, padding=0),
             nn.PixelShuffle(2),
         )
 
     def forward(self, x):
         x = self.increase(x)
         return x
-    
+
 class SpatialContext(nn.Module):
     def __init__(self, in_ch):
         super().__init__()
@@ -211,7 +212,7 @@ class SpatialContext(nn.Module):
     def forward(self, x):
         context = self.block(x)
         return context
-    
+
 class LRP(nn.Module):
     def __init__(self, in_ch, out_ch) -> None:
         super().__init__()
@@ -323,18 +324,18 @@ class LatentCodec(CompressionModel):
             mask_3 = torch.cat((m * m1, m * m0, m * m3, m * m2), dim=1)
             self.masks[curr_mask_str] = [mask_0, mask_1, mask_2, mask_3]
         return self.masks[curr_mask_str]
-    
+
     def sequeeze_with_mask(self, latent, mask):
         latent_group_1, latent_group_2, latent_group_3, latent_group_4 = latent.chunk(4, 1)
         mask_group_1, mask_group_2, mask_group_3, mask_group_4 = mask.chunk(4, 1)
         latent_sequeeze = latent_group_1 * mask_group_1 + latent_group_2 * mask_group_2 + latent_group_3 * mask_group_3 + latent_group_4 * mask_group_4
         return latent_sequeeze
-    
+
     def unsequeeze_with_mask(self, latent_sequeeze, mask):
         mask_group_1, mask_group_2, mask_group_3, mask_group_4 = mask.chunk(4, 1)
         latent = torch.cat((latent_sequeeze * mask_group_1, latent_sequeeze * mask_group_2, latent_sequeeze * mask_group_3, latent_sequeeze * mask_group_4), dim=1)
         return latent
-    
+
     def compress_group_with_mask(self, gaussian_conditional, latent, scales, means, mask, symbols_list, indexes_list):
         latent_squeeze = self.sequeeze_with_mask(latent, mask)
         scales_squeeze = self.sequeeze_with_mask(scales, mask)
@@ -345,7 +346,7 @@ class LatentCodec(CompressionModel):
         indexes_list.extend(indexes.reshape(-1).tolist())
         latent_hat = self.unsequeeze_with_mask(latent_squeeze_hat + means_squeeze, mask)
         return latent_hat
-    
+
     def decompress_group_with_mask(self, gaussian_conditional, scales, means, mask, decoder, cdf, cdf_lengths, offsets):
         scales_squeeze = self.sequeeze_with_mask(scales, mask)
         means_squeeze = self.sequeeze_with_mask(means, mask)
@@ -540,7 +541,7 @@ class LatentCodec(CompressionModel):
         res = self.aux(y_hat)
 
         return x_hat, res
-    
+
     def update(self, scale_table=None, force=False):
         if scale_table is None:
             scale_table = get_scale_table()

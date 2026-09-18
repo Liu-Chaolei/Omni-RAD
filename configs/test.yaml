@@ -1,49 +1,28 @@
-# testing details
-enable_xformers_memory_efficient_attention: False
-color_fix: False
-use_ema: False
-lambda_list: ~ # [0.5] 
-lmbda: 0.001
-
-# output
-rec_path: /data/ssd/liuchaolei/results/reconstruction/Image-Coder/tmp/Kodak
-
-# StableCodec Model
+# Example configuration; set paths and training bounds for your checkpoint.
+enable_xformers_memory_efficient_attention: false
+color_fix: false
+use_ema: false
+lambda_list: null
+rec_path: results/reconstructions
 model:
   lambda_min: 0.2
   lambda_max: 128.0
   mode: test
-  sd_path: /data/ssd/liuchaolei/models/Diffusion/sd-turbo_256
-  elic_path: /data/ssd/liuchaolei/models/Image-Coder/StableCodec/checkpoints/elic_official.pth
-  # Pretrain / resume
-  resume_train: False
-  codec_path: /data/ssd/liuchaolei/results/sc/sc-step/stage2/ft32_step999/checkpoints/checkpoint-40000.pth.tar
-
-  # train_policynet_attach.py 训练出的 PolicyNet
-  policy_path: /path/to/policynet_attach.pth
-
-  # true: 使用 T_pred = T_snr + delta_T
-  # false: 不使用 PolicyNet，只用 T_snr
-  use_policy_delta: true
-
-  policy_net:
-    t_min: 800.0
-    t_max: 999.0
-    delta_max: 30.0
-
-  # Details about the model architecture
+  sd_path: weights/sd-turbo-256
+  elic_path: weights/elic_official.pth
+  resume_train: false
+  codec_path: weights/omnirad.pth.tar
   lora_rank_unet: 32
   lora_rank_vae: 16
   vae_decoder_tiled_size: 160
   vae_encoder_tiled_size: 1024
   latent_tiled_size: 96
   latent_tiled_overlap: 32
-  pos_prompt: A high-resolution, 8K, ultra-realistic image with sharp focus, vibrant colors, and natural lighting.
-
-  freeze_aux_encoder: True
+  pos_prompt: A high-resolution, 8K, ultra-realistic image with sharp focus, vibrant
+    colors, and natural lighting.
+  freeze_aux_encoder: true
   latent_channels: 256
   timesteps: 999
-
-  # CFT settings
-  cft_inject_blocks: [0, 1, 2]
-  cft_w: 0.5  # 0=diff支路, 1=res支路
+  lambda_ref: 1.0
+num_lambdas: 6
+max_images: null

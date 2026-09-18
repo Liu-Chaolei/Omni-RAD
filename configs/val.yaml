@@ -1,15 +1,13 @@
-# valing control
+# Example configuration; set paths and training bounds for your checkpoint.
 val_batch_size: 4
 validation_steps: 100
-val_first: False
-save_val: False
+val_first: false
+save_val: false
 save_steps: 10000
-crop_val: True
-
-# valing details
-enable_xformers_memory_efficient_attention: False
-set_grads_to_none: True
+crop_val: true
+enable_xformers_memory_efficient_attention: false
+set_grads_to_none: true
 world_size: 1
 local_rank: -1
 dist_url: env://
-color_fix: False
+color_fix: false

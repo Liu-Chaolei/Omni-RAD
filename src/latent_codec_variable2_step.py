@@ -29,6 +29,7 @@ Training strategy:
 """
 
 import math
+from rate_control import LambdaFiLMEmbed, FiLMLayer, DynamicTimestepModule
 from torch import Tensor
 from typing import NamedTuple
 
@@ -38,7 +39,8 @@ from compressai.entropy_models import EntropyBottleneck, GaussianConditional
 from compressai.ops import quantize_ste as ste_round
 from compressai.ans import BufferedRansEncoder, RansDecoder
 import sys
-sys.path.append("..")
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ELIC.model.elic_official import CompressionModel, get_scale_table
 
 # ---------------------------------------------------------------------------
@@ -59,117 +61,8 @@ LAMBDA_MAX = 128.0  # conservative upper bound — wider than any expected lambd
 # λ-FiLM conditioning modules
 # ===========================================================================
 
-class LambdaFiLMEmbed(nn.Module):
-    """Converts scalar/batch λ to a dense embedding  f(λ) ∈ R^{embed_dim}.
-
-    Implements FourierCond from MRIC (Agustsson et al., CVPR 2023) in PyTorch:
-        λ  →  log-normalise to [0,1]  →  Fourier features  →  2-layer MLP
-
-    The embedding is SHARED across all injection points; each injection site
-    learns its own γ/β linear projection (see FiLMLayer).
-    """
-
-    def __init__(
-        self,
-        embed_dim:  int   = FILM_DIM,
-        num_freqs:  int   = NUM_FREQS,
-        lambda_min: float = LAMBDA_MIN,
-        lambda_max: float = LAMBDA_MAX,
-    ):
-        super().__init__()
-        # Register as buffers so they are saved in state_dict and survive resume.
-        # If a checkpoint was saved with different lambda bounds, loading will
-        # restore the original bounds — preventing silent range mismatch on resume.
-        self.register_buffer(
-            "log_lambda_min",
-            torch.tensor(math.log(lambda_min), dtype=torch.float32),
-        )
-        self.register_buffer(
-            "log_lambda_max",
-            torch.tensor(math.log(lambda_max), dtype=torch.float32),
-        )
-
-        fourier_dim = 1 + 2 * num_freqs          # raw l + sin/cos pairs
-        self.register_buffer(
-            "freq_bands",
-            2.0 ** torch.linspace(0.0, num_freqs - 1.0, num_freqs),
-        )
-
-        # 2-layer MLP matching MRIC's BetaMlp (Dense + ReLU, twice)
-        self.mlp = nn.Sequential(
-            nn.Linear(fourier_dim, embed_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(embed_dim, embed_dim),
-            nn.ReLU(inplace=True),
-        )
-
-    def forward(self, lmbda: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            lmbda: Tensor [B] or scalar float — raw λ values.
-        Returns:
-            f_lmbda: Tensor [B, embed_dim]
-        """
-        if not isinstance(lmbda, torch.Tensor):
-            lmbda = torch.tensor(lmbda, dtype=torch.float32)
-        lmbda = lmbda.float()
-        if lmbda.dim() == 0:
-            lmbda = lmbda.unsqueeze(0)                     # [1]
-
-        # Log-normalise λ to [0, 1]
-        # log_lambda_min/max are registered buffers (0-dim tensors) that move
-        # with the model device automatically.
-        log_nor_lmbda = (torch.log(lmbda.clamp(min=1e-8)) - self.log_lambda_min) / (
-            self.log_lambda_max - self.log_lambda_min
-        )
-        # No clamping needed when lmbda is within [lambda_min, lambda_max].
-        # A soft warn-only clamp with a small epsilon avoids hard saturation
-        # if lmbda accidentally falls slightly outside the configured range.
-        log_nor_lmbda = log_nor_lmbda.clamp(0.0, 1.0)                              # [B]
-
-        # Fourier embedding: [B, fourier_dim]
-        l_col  = log_nor_lmbda.unsqueeze(-1)                           # [B, 1]
-        freqs  = self.freq_bands.to(lmbda.device)          # [num_freqs]
-        angles = l_col * freqs.unsqueeze(0) * math.pi      # [B, num_freqs]
-        fourier = torch.cat(
-            [l_col, torch.sin(angles), torch.cos(angles)], dim=-1
-        )                                                  # [B, fourier_dim]
-
-        return self.mlp(fourier)                           # [B, embed_dim]
 
 
-class FiLMLayer(nn.Module):
-    """Per-injection-site Feature-wise Linear Modulation.
-
-    Applies  h' = h ⊙ γ(f(λ)) + β(f(λ))  where γ and β are produced by
-    independent linear projections of the shared embedding f(λ).
-
-    Weights initialised for identity at start of training:
-        γ_proj: weight=0, bias=1  → γ=1 always at init
-        β_proj: weight=0, bias=0  → β=0 always at init
-    """
-
-    def __init__(self, embed_dim: int, feat_dim: int):
-        super().__init__()
-        self.gamma_proj = nn.Linear(embed_dim, feat_dim)
-        self.beta_proj  = nn.Linear(embed_dim, feat_dim)
-        nn.init.zeros_(self.gamma_proj.weight)
-        nn.init.ones_ (self.gamma_proj.bias)
-        nn.init.zeros_(self.beta_proj.weight)
-        nn.init.zeros_(self.beta_proj.bias)
-
-    def forward(self, h: torch.Tensor, film_embed: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            h:          [B, C, H, W]
-            film_embed: [B, embed_dim]
-        Returns:
-            [B, C, H, W]  modulated feature
-        """
-        B = h.size(0)
-        gamma = self.gamma_proj(film_embed).view(B, -1, 1, 1)  # [B, C, 1, 1]
-        beta  = self.beta_proj (film_embed).view(B, -1, 1, 1)
-        return h * gamma + beta
 
 
 # ===========================================================================
@@ -179,15 +72,15 @@ class FiLMLayer(nn.Module):
 class InceptionDWConv2d(nn.Module):
     def __init__(self, split_indexes, square_kernel_size=3, band_kernel_size=11):
         super().__init__()
-        
+
         self.dwconv_hw = nn.Conv2d(split_indexes[1], split_indexes[1], square_kernel_size, padding=square_kernel_size//2, groups=split_indexes[1])
         self.dwconv_w = nn.Conv2d(split_indexes[2], split_indexes[2], kernel_size=(1, band_kernel_size), padding=(0, band_kernel_size//2), groups=split_indexes[2])
         self.dwconv_h = nn.Conv2d(split_indexes[3], split_indexes[3], kernel_size=(band_kernel_size, 1), padding=(band_kernel_size//2, 0), groups=split_indexes[3])
         self.split_indexes = split_indexes
-        
+
     def forward(self, x):
         id, x_hw, x_w, x_h = torch.split(x, self.split_indexes, dim=1)
-        return torch.cat((id, self.dwconv_hw(x_hw), self.dwconv_w(x_w), self.dwconv_h(x_h)), dim=1)    
+        return torch.cat((id, self.dwconv_hw(x_hw), self.dwconv_w(x_w), self.dwconv_h(x_h)), dim=1)
 
 class InceptionNeXt(nn.Module):
     def __init__(self, in_ch):
@@ -204,7 +97,7 @@ class InceptionNeXt(nn.Module):
         x = self.act(x)
         x = self.conv2(x)
         return x + shortcut
-        
+
 class GatedCNNBlock(nn.Module):
     def __init__(self, in_ch, expansion_ratio=2):
         super().__init__()
@@ -221,7 +114,7 @@ class GatedCNNBlock(nn.Module):
         x1, x2 = self.fc1(x).chunk(2, 1)
         x = self.fc2(self.act(x1) * self.conv(x2))
         return x + shortcut
-    
+
 class BasicBlock(nn.Module):
     def __init__(self, in_ch):
         super().__init__()
@@ -250,26 +143,26 @@ class Downsample(nn.Module):
 
     def forward(self, x):
         return self.branch1(x) + self.branch2(x)
-    
+
 class Upsample(nn.Module):
     def __init__(self, in_ch, out_ch):
         super().__init__()
         self.branch1 = nn.Sequential(
             nn.Conv2d(in_ch, in_ch, kernel_size=3, padding=1),
             nn.GELU(),
-            nn.Conv2d(in_ch, out_ch * 4, kernel_size=1, padding=0), 
+            nn.Conv2d(in_ch, out_ch * 4, kernel_size=1, padding=0),
             nn.PixelShuffle(2),
         )
         self.branch2 = nn.Sequential(
             nn.Conv2d(in_ch, in_ch, kernel_size=5, padding=2, groups=in_ch),
             nn.GELU(),
-            nn.Conv2d(in_ch, out_ch * 4, kernel_size=1, padding=0), 
+            nn.Conv2d(in_ch, out_ch * 4, kernel_size=1, padding=0),
             nn.PixelShuffle(2),
         )
 
     def forward(self, x):
         return self.branch1(x) + self.branch2(x)
-    
+
 class Adapter(nn.Module):
     def __init__(self, in_ch, out_ch) -> None:
         super().__init__()
@@ -284,7 +177,7 @@ class Adapter(nn.Module):
 
     def forward(self, x):
         return self.branch1(x) + self.branch2(x)
-    
+
 class HyperAnalysis(nn.Module):
     def __init__(self, M=320) -> None:
         super().__init__()
@@ -297,22 +190,22 @@ class HyperAnalysis(nn.Module):
     def forward(self, x):
         x = self.reduction(x)
         return x
-    
+
 class HyperSynthesis(nn.Module):
     def __init__(self, M=320) -> None:
         super().__init__()
         self.increase = nn.Sequential(
-            nn.Conv2d(M // 2, M * 2, kernel_size=1, padding=0), 
+            nn.Conv2d(M // 2, M * 2, kernel_size=1, padding=0),
             nn.PixelShuffle(2),
             BasicBlock(M // 2),
-            nn.Conv2d(M // 2, M * 4, kernel_size=1, padding=0), 
+            nn.Conv2d(M // 2, M * 4, kernel_size=1, padding=0),
             nn.PixelShuffle(2),
         )
 
     def forward(self, x):
         x = self.increase(x)
         return x
-    
+
 class SpatialContext(nn.Module):
     def __init__(self, in_ch):
         super().__init__()
@@ -326,7 +219,7 @@ class SpatialContext(nn.Module):
     def forward(self, x):
         context = self.block(x)
         return context
-    
+
 class LRP(nn.Module):
     def __init__(self, in_ch, out_ch) -> None:
         super().__init__()
@@ -535,43 +428,6 @@ class TargetRateModule(nn.Module):
 # DynamicTimestepModule — SNR-based analytical T* from entropy model σ
 # ===========================================================================
 
-class DynamicTimestepModule(nn.Module):
-    """Compute per-image dynamic timestep T* from entropy model scales.
-
-    Uses the SNR schedule from ``alphas_cumprod`` to establish a monotonic
-    ordering, then linearly rescales the raw timestep into [t_min, t_max]
-    so that T* stays near the UNet's training point (T=999).
-
-    Args:
-        alphas_cumprod: 1-D tensor of length T (typically 1000) from DDPMScheduler.
-        t_min: lower bound of the output T* range (default 800).
-        t_max: upper bound of the output T* range (default 999).
-    """
-
-    def __init__(self, alphas_cumprod: torch.Tensor, t_min: int = 800, t_max: int = 999):
-        super().__init__()
-        self.t_min = t_min
-        self.t_max = t_max
-        ac = alphas_cumprod.float()
-        self.register_buffer("alphas_cumprod", ac)
-        snr_schedule = ac / (1.0 - ac)
-        self.register_buffer("snr_schedule", snr_schedule)
-
-    def forward(self, scales_all: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            scales_all: [B, 320, H, W] — summed scales from the 4-pass
-                        checkerboard context model.
-        Returns:
-            T_star: [B] float tensor, each entry in [t_min, t_max].
-        """
-        sigma_quant = 1.0 / 12.0
-        signal_var  = scales_all.mean(dim=[1, 2, 3]) ** 2  # [B]
-        snr_compress = signal_var / sigma_quant             # [B]
-        T_raw = torch.searchsorted(-self.snr_schedule, -snr_compress)
-        T_star = self.t_min + (self.t_max - self.t_min) * (T_raw.float() / 999.0)
-        T_star = T_star.clamp(self.t_min, self.t_max)
-        return T_star
 
 
 # ===========================================================================
@@ -830,6 +686,11 @@ class LatentCodec(CompressionModel):
         """
         B          = latent.size(0)
         lmbda      = self._resolve_lmbda(lmbda, B, latent.device)
+        if B != 1:
+            raise ValueError("Bitstream encoding supports one image at a time")
+        lmbda = lmbda.half().float()
+        if not torch.isfinite(lmbda).all() or (lmbda <= 0).any():
+            raise ValueError("lambda must be positive and representable as float16")
         film_embed = self.film_embed(lmbda)
 
         # ---- Injection Point 1: ga ----

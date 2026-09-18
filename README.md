@@ -1,179 +1,89 @@
-# StableCodec
+# Omni-RAD
 
-A high-fidelity neural image compression framework that leverages pre-trained diffusion models (SD-Turbo) to achieve extreme compression ratios while maintaining high perceptual quality. StableCodec uses one-step diffusion denoising as a powerful decoder, enabling it to reconstruct fine-grained details at very low bitrates where traditional codecs produce significant artifacts.
+Research code for **Omni-RAD: Variable-Rate One-Step Diffusion Image Compression with Adaptive Timestep Selection** (working English title of the accompanying Chinese manuscript).
 
-## Architecture
+Omni-RAD combines a 256-channel VAE representation, continuous λ-FiLM rate conditioning, and an entropy-scale SNR proxy that selects a per-image diffusion timestep. The decoder performs one denoising step and adds an auxiliary latent residual. This implementation builds on StableCodec and ELIC.
 
-```
-Encoder:   Input Image → VAE Encoder → Latent Representation
-                                            ↓
-Bottleneck:                    LatentCodec (Entropy Bottleneck)
-                                            ↓
-                                   Quantized Latent → Compressed Bitstream
-                                            ↓
-Decoder:   Compressed Bitstream → LatentCodec Decoder → Reconstructed Latent
-                                            ↓
-                              One-Step UNet Denoising (LoRA-enhanced)
-                                            ↓
-                                  VAE Decoder → Reconstructed Image
-```
+## Release status
 
-Key components:
-- **SD-Turbo backbone**: Pre-trained VAE and UNet from Stability AI's SD-Turbo, fine-tuned with LoRA adapters
-- **LatentCodec**: Hyper-prior based entropy coding module with InceptionNeXt blocks for latent compression
-- **ELIC auxiliary encoder**: Provides additional structural guidance during compression
-- **Tiled VAE**: Enables processing of high-resolution images (up to 8K) on limited VRAM by splitting into overlapping tiles
+This tree contains the A0 paper route. CFT, PolicyNet, GLC, oracle searches, and other exploratory variants have been removed. Historical experiments remain in Git history. The separate paper source directory is not modified or distributed here.
 
-## Project Structure
+**Trained weights and the adapted 256-channel SD-Turbo backbone are not included.** Download links, final training configurations, and numerical reproduction of the paper results still need to be supplied. The checked-in YAML files are examples, not certified final paper settings. See [release validation](docs/RELEASE_VALIDATION.md) for checks performed and outstanding requirements.
 
-```
-├── configs/
-│   ├── base.yaml          # Shared settings (patch size, workers, seed)
-│   ├── stage0.yaml        # Stage 0: Initial latent codec training
-│   ├── stage1.yaml        # Stage 1: Rate-distortion fine-tuning
-│   ├── stage2.yaml        # Stage 2: GAN-based perceptual fine-tuning
-│   ├── test.yaml          # Inference/testing configuration
-│   └── val.yaml           # Validation settings
-├── ELIC/
-│   └── model/             # ELIC auxiliary encoder implementation
-├── src/
-│   ├── StableCodec.py     # Main model: integrates VAE, UNet, LoRA, LatentCodec
-│   ├── latent_codec.py    # Entropy-constrained bottleneck for latent space
-│   ├── model.py           # SD-Turbo scheduler and LoRA forward pass utilities
-│   ├── train.py           # Multi-stage distributed training entry point
-│   ├── test.py            # Testing with config-based evaluation
-│   ├── inference.py       # Image compression and decompression
-│   ├── evaluate.py        # Metric evaluation (PSNR, MS-SSIM, LPIPS, FID, KID)
-│   ├── compress_utils.py  # Bitstream read/write utilities
-│   ├── color_fix.py       # AdaIN-based color correction post-processing
-│   ├── loss/              # Rate-distortion and perceptual loss functions
-│   └── my_utils/          # Dataset loading, tiled VAE, training utilities
-├── compress.sh            # Batch compression script
-├── eval_folders.sh        # Batch evaluation script
-├── requirements.txt       # Python dependencies
-└── LICENSE                # MIT License
-```
+## Structure
 
-## Requirements
+- `src/StableCodec_variable2_step.py`: Omni-RAD model and single-step decoder.
+- `src/latent_codec_variable2_step.py`: FiLM transforms and entropy coding; `src/rate_control.py` holds weight-free rate/timestep control modules.
+- `src/train.py`, `src/test.py`, `src/compress.py`, `src/evaluate.py`: training, estimated-rate testing, actual bitstream coding, and image metrics.
+- `src/StableCodec_ori.py`, `src/latent_codec_ori.py`, `src/test_baseline.py`: optional fixed-rate 4/256-channel baseline evaluation.
+- `src/my_utils/`, `src/vision_aided_loss/`, `ELIC/model/`: training utilities, DINO discriminator, and auxiliary encoder.
+- `configs/`: portable example configurations. Generated outputs go into ignored `results/`.
 
-- Python 3.10+
-- CUDA-compatible GPU (24GB+ VRAM recommended for training)
-- Pre-trained model weights:
-  - [SD-Turbo](https://huggingface.co/stabilityai/sd-turbo)
-  - ELIC official checkpoint
-  - CLIP ViT-B/32 (for CLIP loss during training)
+## Installation
 
-Install dependencies:
+Use Python 3.10 and a CUDA-capable PyTorch environment. Run commands from the repository root:
 
 ```bash
+conda create -n omnirad python=3.10
+conda activate omnirad
 pip install -r requirements.txt
 ```
 
-## Pre-trained Weights
+The dependency set retains PyTorch 2.1.2 / torchvision 0.16.2 and diffusers 0.25.1. A clean installation has not yet been validated. Install xformers separately only if a compatible build is available; it is disabled by default.
 
-Before training or inference, download the following:
+## Weights and data
 
-| Weight | Description |
-|--------|-------------|
-| `sd-turbo` | Stability AI's SD-Turbo diffusion model |
-| `elic_official.pth` | Pre-trained ELIC encoder weights |
-| `clip-vit-base-patch32` | OpenAI CLIP model (for training loss only) |
+Set paths in your local copies of the YAML files (for example `configs/local/`). Required artifacts:
 
-Update the paths in the corresponding config files under `configs/`.
+| Artifact | Purpose |
+| --- | --- |
+| Adapted SD-Turbo directory | Hugging Face layout with tokenizer, text encoder, scheduler, 256-channel VAE, and UNet producing 256 channels; ordinary 4-channel SD-Turbo is not a substitute. |
+| ELIC checkpoint | Frozen auxiliary analysis transform. |
+| Omni-RAD checkpoint | Codec, VAE/UNet adaptations, and λ prediction scaling (`state_dict_lora_proj`). |
+| DINO / LPIPS weights | Downloaded by the respective libraries for training and metrics. |
+
+Match the backbone architecture and λ embedding bounds to the checkpoint. Existing loading code supports initialization from partial checkpoints; warnings about skipped tensors must be resolved before reporting results.
+
+Training uses an HDF5 file with one RGB H×W×3 image array per root key, at least 512×512 pixels. Validation uses the `valid/` subdirectory under `train_dataset`. Testing takes PNG/JPG images from `base.yaml:test_dataset`. Obtain datasets separately; do not commit datasets or model weights.
 
 ## Training
 
-Training follows a three-stage progressive pipeline. All stages support Distributed Data Parallel (DDP).
-
-### Stage 0 — Latent Codec Pre-training
-
-Trains the LatentCodec module with high MSE weight for stable initialization:
+The paper route uses per-image log-uniform λ sampling and `mean(D_i / λ_i) + mean(bpp_i)`, followed by DINO adversarial fine-tuning. CLIP loss is disabled in the example configurations to match the manuscript's MSE + VGG-LPIPS objective.
 
 ```bash
-torchrun --nproc_per_node=<NUM_GPUS> src/train.py --stage 0
+accelerate launch --num_processes 1 src/train.py --stage 1 --config_dir configs --experiment_name rd
+accelerate launch --num_processes 1 src/train.py --stage 2 --config_dir configs --experiment_name gan
 ```
 
-### Stage 1 — Rate-Distortion Optimization
+Configure the initialization checkpoint for stage 1 and the trained stage-1 checkpoint for stage 2. `stage0.yaml` is an optional cold-start configuration of the same trainer; it is not a separate validated latent-only pretraining recipe. Set `max_train_steps`, batch size, and paths before launching. W&B and compilation are disabled by default.
 
-Fine-tunes the full pipeline with rate-distortion loss (MSE + LPIPS + CLIP):
+## Testing and real compression
+
+Forward testing reports **estimated bpp**, PSNR, VGG-LPIPS and timestep statistics, with a JSON summary. Set `lambda_list` and optionally `max_images` in the test config.
 
 ```bash
-torchrun --nproc_per_node=<NUM_GPUS> src/train.py --stage 1
+python src/test.py --base_config_file configs/base.yaml --test_config_file configs/test.yaml
+python src/compress.py --config configs/test.yaml --img_path data/kodak --bin_path results/bits --rec_path results/rec --lmbda 2 --max_images 1
+python src/compress.py --config configs/test.yaml --mode decode --bin_path results/bits --rec_path results/decoded
+python src/evaluate.py --recon_dir results/rec --gt_dir data/kodak
 ```
 
-### Stage 2 — GAN Fine-tuning
+The new `.ord` container stores original dimensions, entropy shape, float16 λ and two entropy streams. Encoding uses the serialized λ; decoding recomputes the timestep from entropy scales without the original image. Real bpp includes the header and is divided by original image area. This container is versioned and does not read legacy StableCodec bitstreams. Use one λ per output directory and the same checkpoint/backbone for encoding and decoding.
 
-Adds adversarial loss for improved perceptual quality:
+Evaluation matches image stems. It reports PSNR, SSIM, MS-SSIM, DISTS and AlexNet-LPIPS; this LPIPS differs from the VGG metric used in forward testing. FID/KID retain the inherited NeuralCompression patch evaluation procedure and are only reported for more than 50 images; these values should not be equated to paper curves without confirming the original protocol.
+
+Optional baseline evaluation (requires its own trained checkpoint):
 
 ```bash
-torchrun --nproc_per_node=<NUM_GPUS> src/train.py --stage 2
+python src/test_baseline.py --method channel --base_config_file configs/base.yaml --test_config_file configs/ch4.yaml
+python src/test_baseline.py --method channel --base_config_file configs/base.yaml --test_config_file configs/ch256.yaml
 ```
 
-### Configuration
-
-Each stage has a dedicated config file in `configs/`. Key parameters:
-
-| Parameter | Description |
-|-----------|-------------|
-| `lambda` | Rate-distortion trade-off weight |
-| `learning_rate` | Main optimizer learning rate |
-| `lora_rank_unet` | LoRA rank for UNet (default: 32) |
-| `lora_rank_vae` | LoRA rank for VAE encoder (default: 16) |
-| `global_batch_size` | Total batch size across all GPUs |
-| `patch_size` | Training crop size (default: 512x512) |
-| `precision` | Training precision (`bf16` / `fp16` / `None`) |
-
-## Inference
-
-### Compress and Decompress
+## Validation and attribution
 
 ```bash
-python src/inference.py \
-    --sd_path <PATH_TO_SD_TURBO> \
-    --elic_path <PATH_TO_ELIC_CHECKPOINT> \
-    --codec_path <PATH_TO_STABLECODEC_CHECKPOINT> \
-    --img_path <PATH_TO_INPUT_IMAGES> \
-    --rec_path <PATH_TO_SAVE_RECONSTRUCTIONS> \
-    --bin_path <PATH_TO_SAVE_BITSTREAMS>
+python -m unittest discover -s tests -v
+python -m compileall -q src ELIC
 ```
 
-Or use the provided script:
-
-```bash
-bash compress.sh
-```
-
-Optional flag `--color_fix` enables AdaIN-based color correction for the reconstructed images.
-
-### Config-based Testing
-
-```bash
-python src/test.py
-```
-
-Edit `configs/test.yaml` to specify the model checkpoint and test dataset paths.
-
-## Evaluation
-
-Evaluate reconstruction quality against ground truth:
-
-```bash
-python src/evaluate.py \
-    --recon_dir <PATH_TO_RECONSTRUCTIONS> \
-    --gt_dir <PATH_TO_GROUND_TRUTH>
-```
-
-Supported metrics:
-
-| Metric | Type | Description |
-|--------|------|-------------|
-| PSNR | Distortion | Peak Signal-to-Noise Ratio |
-| MS-SSIM | Distortion | Multi-Scale Structural Similarity |
-| LPIPS | Perceptual | Learned Perceptual Image Patch Similarity |
-| DISTS | Perceptual | Deep Image Structure and Texture Similarity |
-| FID | Distribution | Fréchet Inception Distance |
-| KID | Distribution | Kernel Inception Distance |
-
-## License
-
-This project is released under the [MIT License](LICENSE).
+See [third-party notices](THIRD_PARTY_NOTICES.md) and the existing [license](LICENSE). Existing copyright notices are preserved; no new author name has been assigned. The notices record verified upstream file matches and remaining attribution limitations. Publication metadata and a citation will be added once finalized.
